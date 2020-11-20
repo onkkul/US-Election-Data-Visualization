@@ -1,0 +1,528 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# -*- coding: utf-8 -*-\n",
+    "\"\"\"\n",
+    "Created on Thu Nov 12 13:09:02 2020\n",
+    "\n",
+    "@author: Onkar Kulkarni\n",
+    "\"\"\"\n",
+    "\n",
+    "import pandas as pd\n",
+    "from os import listdir\n",
+    "from collections import OrderedDict\n",
+    "from os.path import isfile, join, dirname, realpath\n",
+    "\n",
+    "from pymongo import MongoClient\n",
+    "\n",
+    "from ipywidgets import widgets, interactive, HBox, Layout,VBox #interact\n",
+    "\n",
+    "import plotly.io as pio\n",
+    "import plotly.express as px\n",
+    "import plotly.graph_objects as go\n",
+    "from plotly.subplots import make_subplots\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# Database Connectivity #############################\n",
+    "\n",
+    "client = MongoClient()\n",
+    "database=client.Project3\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# Database Loading #############################\n",
+    "\n",
+    "pwd = dirname(realpath('__file__'))\n",
+    "datapath = pwd + '\\ archive'.replace(' ', '')\n",
+    "\n",
+    "collections = [file for file in listdir(datapath) if isfile(join(datapath, file))]\n",
+    "\n",
+    "for file in collections:\n",
+    "    dataframe = pd.read_csv(join(datapath, file))\n",
+    "    dataframe = dataframe.rename(columns={\"votes\": \"total_votes\"}, errors='ignore')\n",
+    "    dataframe = dataframe.rename(columns={\"State\": \"state\"}, errors='ignore')\n",
+    "    dataframe = dataframe.rename(columns={\"County\": \"county\"}, errors='ignore')\n",
+    "    json_dump = dataframe.to_dict(orient='records')\n",
+    "    # dataframe.to_json(file.replace('.csv', '.json'), orient='records')\n",
+    "\n",
+    "    database[file.replace('.csv', '')].drop()\n",
+    "    database[file.replace('.csv', '')].insert_many(json_dump)\n",
+    "    \n",
+    "    del[json_dump]\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Graph 1: Show Party wise votes for election in a county/state"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# Backend Queries #############################\n",
+    "\n",
+    "indexes = {\"President\":database.president_county, \n",
+    "           \"Governors\":database.governors_county, \n",
+    "           \"Senate\":database.senate_county }\n",
+    "\n",
+    "databases = {\"President\":database.president_county_candidate, \n",
+    "             \"Governors\":database.governors_county_candidate, \n",
+    "             \"Senate\":database.senate_county_candidate}\n",
+    "\n",
+    "#----------------------------------------------------\n",
+    "def country_trend(collection):\n",
+    "    documents = collection.aggregate([\n",
+    "        {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "        {'$sort': OrderedDict([('votes', -1), ('_id', -1)])}\n",
+    "    ])\n",
+    "    return documents\n",
+    "def single_state_trend(collection, state):\n",
+    "    documents = collection.aggregate([\n",
+    "        {'$match':{'state':state}},\n",
+    "        {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "        {'$sort': OrderedDict([('votes', -1), ('_id', -1)])}\n",
+    "    ])\n",
+    "    return documents\n",
+    "def single_county_trend(collection, state, county):\n",
+    "    documents = collection.aggregate([\n",
+    "        {'$match':{'state':state, 'county':county}},\n",
+    "        {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "        {'$sort': OrderedDict([('votes', -1), ('_id', -1)])}\n",
+    "    ])\n",
+    "    return documents\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# UI ELEMENTS #############################\n",
+    "\n",
+    "county = widgets.Dropdown(options=['Select'], description='County')\n",
+    "\n",
+    "#----------------------------------------------------\n",
+    "state = widgets.Dropdown(options=['Select'], description='State')\n",
+    "\n",
+    "def state_change_handler(change):\n",
+    "    if change['new'] == 'Select':\n",
+    "        return\n",
+    "    collection = indexes[UI.children[0].value]\n",
+    "    county.options = ['Select', 'All',] + collection.distinct('county', {'state':change['new']}) \n",
+    "\n",
+    "state.observe(state_change_handler, names='value')\n",
+    "#----------------------------------------------------\n",
+    "\n",
+    "election = widgets.Dropdown(options=['Select']+list(indexes.keys()),description='ElectType:')\n",
+    "\n",
+    "def election_change_handler(change):\n",
+    "    if change['new'] == 'Select':\n",
+    "        return\n",
+    "    collection = indexes[change['new']]\n",
+    "    state.options = ['Select', 'All',] + collection.distinct('state')\n",
+    "    county.options = ['Select', 'All',] + collection.distinct('county', {'state':UI.children[1].value})\n",
+    "    \n",
+    "election.observe(election_change_handler, names='value')\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "############################# IMAGE PLOT ELEMENTS #############################\n",
+    "def get_figure(x, y, figure_type, title):\n",
+    "    colors = px.colors.qualitative.Alphabet[0:len(x)]\n",
+    "    fig = make_subplots(rows=1, cols=2, specs=[[{\"type\": \"pie\"}, {\"type\": \"bar\"}]])\n",
+    "\n",
+    "    fig.add_trace(go.Pie(labels=x, values=y, marker=dict(colors=colors)), row=1, col=1)\n",
+    "    fig.add_trace(go.Bar(x=x, y=y, marker=dict(color=colors)), row=1, col=2)\n",
+    "    fig.update_layout(title_text=\"Party Vote Comparison\", showlegend=True)\n",
+    "    return fig"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "dfd216f034474f0e9add70f93980c7dc",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "VBox(children=(HBox(children=(Dropdown(description='ElectType:', options=('Select', 'President', 'Governors', …"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "############################# MAIN PLOT #############################\n",
+    "\n",
+    "def plotit(election, state, county):\n",
+    "    if election == 'Select':\n",
+    "        return\n",
+    "\n",
+    "    collection = databases[election]\n",
+    "    if state == 'All':\n",
+    "        documents = country_trend(collection)\n",
+    "        title = f'Party-Wise votes for {election} in {state}'\n",
+    "    elif county == 'All':\n",
+    "        documents = single_state_trend(collection, state)\n",
+    "        title = f'Party-Wise votes for {election} in {state}'\n",
+    "    else:\n",
+    "        documents = single_county_trend(collection, state, county)\n",
+    "        title = f'Party-Wise votes for {election} in {county}, {state}'\n",
+    "        \n",
+    "    x, y = [], []\n",
+    "    for doc in documents:\n",
+    "        x.append(doc['_id'])\n",
+    "        y.append(doc['votes']) \n",
+    "        \n",
+    "    fig = get_figure(x, y, 'bar', title)\n",
+    "    fig.show()\n",
+    "    \n",
+    "UI = interactive(plotit, election=election, state=state, county=county)\n",
+    "controls = HBox(UI.children[:-1], layout = Layout(flex_flow='row wrap'))\n",
+    "output = UI.children[-1]\n",
+    "display(VBox([controls, output]))\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "\n",
+    "\n",
+    "# Party vs Diversity Map\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# UI ELEMENTS #############################\n",
+    "\n",
+    "county = widgets.Dropdown(options=['Select'], description='County')\n",
+    "\n",
+    "#----------------------------------------------------\n",
+    "state = widgets.Dropdown(options=['Select'], description='State')\n",
+    "\n",
+    "def state_change_handler(change):\n",
+    "    if change['new'] == 'Select':\n",
+    "        return\n",
+    "    collection = indexes[UI.children[0].value]\n",
+    "    county.options = ['Select', 'All',] + collection.distinct('county', {'state':change['new']}) \n",
+    "\n",
+    "state.observe(state_change_handler, names='value')\n",
+    "#----------------------------------------------------\n",
+    "\n",
+    "election = widgets.Dropdown(options=['Select']+list(indexes.keys()),description='ElectType:')\n",
+    "\n",
+    "def election_change_handler(change):\n",
+    "    if change['new'] == 'Select':\n",
+    "        return\n",
+    "    collection = indexes[change['new']]\n",
+    "    state.options = ['Select', 'All',] + collection.distinct('state')\n",
+    "    county.options = ['Select', 'All',] + collection.distinct('county', {'state':UI.children[1].value})\n",
+    "    \n",
+    "election.observe(election_change_handler, names='value')\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# IMAGE PLOT ELEMENTS #############################\n",
+    "\n",
+    "def query_formatter(collection, state, county=None):\n",
+    "    if county:        iterator = collection.distinct('county', {'state':state})\n",
+    "    else:             iterator = collection.distinct('state')\n",
+    "\n",
+    "    name = 'counties' if county else 'states'\n",
+    "    result = {}\n",
+    "    for each in iterator:\n",
+    "        if county:       documents = get_diversity_county(collection,state,each)\n",
+    "        else:            documents = get_diversity_state(collection,each)\n",
+    "        \n",
+    "        temp = {}\n",
+    "        for doc in documents:\n",
+    "            temp[doc['_id']] = doc['votes']\n",
+    "            temp['diversity'] = doc['Diversity'][0]['_id']\n",
+    "        \n",
+    "        result[each] = temp\n",
+    "    \n",
+    "    result = pd.DataFrame.from_dict(result, orient='index')\n",
+    "    result = result.rename_axis(f'{name}')\n",
+    "    return result\n",
+    "\n",
+    "def get_diversity_figure(result, title):\n",
+    "    titles = ['Republican', 'Democrat','Diversity'] \n",
+    "    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, subplot_titles=titles)\n",
+    "\n",
+    "    fig.add_trace(go.Scatter(x=result.index, y=result['diversity']),row=3, col=1)\n",
+    "\n",
+    "    fig.add_trace(go.Scatter(x=result.index, y=result['REP']),row=2, col=1)\n",
+    "\n",
+    "    fig.add_trace(go.Scatter(x=result.index, y=result['DEM']),row=1, col=1)\n",
+    "\n",
+    "    fig.update_layout(height=400, width=600, title_text=f\"Racial Diversity-Vote Comparison for {title}\",\n",
+    "                      showlegend=False)\n",
+    "    fig.update_annotations(dict(font_size=8))\n",
+    "    return fig"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "############################# BACKEND Queries #############################\n",
+    "\n",
+    "def get_diversity_county(collection,state,county):\n",
+    "    documents = collection.aggregate([\n",
+    "        {'$match':{'state':state, 'county':county}},\n",
+    "        {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "        {'$lookup':{\n",
+    "            'from': \"census_2017\",\n",
+    "            'let': {'election_state': state, 'election_county': county},\n",
+    "            'pipeline':[\n",
+    "                {'$match':\n",
+    "                    { '$expr':\n",
+    "                        { '$and':[\n",
+    "                            { '$eq': [ \"$state\",  \"$$election_state\" ] },\n",
+    "                            { '$eq': [ \"$county\", \"$$election_county\" ] }\n",
+    "                        ]}\n",
+    "                    }\n",
+    "                },\n",
+    "                {'$group':{\n",
+    "                    '_id':'Diversity',\n",
+    "                    \"White\" : {'$sum' :\"$White\"}}},\n",
+    "                {'$project':{'_id':{'$subtract':[100,\"$White\"]}}},\n",
+    "                {'$sort': OrderedDict([('_id', -1)])},\n",
+    "            ],\n",
+    "            \"as\":\"Diversity\"\n",
+    "        }}\n",
+    "    ])\n",
+    "    return documents\n",
+    "\n",
+    "def get_diversity_state(collection,state):\n",
+    "    documents = collection.aggregate([\n",
+    "        {'$match':{'state':state}},\n",
+    "        {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "        {'$lookup':{\n",
+    "            'from': \"census_2017\",\n",
+    "            'let': {'election_state': state},\n",
+    "            'pipeline':[\n",
+    "                {'$match':{'$expr':{ '$eq': [ \"$state\",  \"$$election_state\" ] }}},\n",
+    "                {'$group':{\n",
+    "                    '_id':'Diversity',\n",
+    "                    'Count' : {'$sum':1},\n",
+    "                    \"White\" : {'$sum' :\"$White\"}}},\n",
+    "                {'$project':{'_id':{'$divide':[{'$subtract':[{\"$multiply\":[\"$Count\", 100]},\"$White\"]}, 100]}}},\n",
+    "                {'$sort': OrderedDict([('_id', -1)])},\n",
+    "            ],\n",
+    "            \"as\":\"Diversity\"\n",
+    "        }}\n",
+    "    ])\n",
+    "    return documents"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "138ced30a3fc4b418572c883bcd27cef",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "VBox(children=(HBox(children=(Dropdown(description='ElectType:', options=('Select', 'President', 'Governors', …"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "############################# MAIN PLOT #############################\n",
+    "\n",
+    "def plot_second(election, state, county):\n",
+    "    if election == 'Select':\n",
+    "        return\n",
+    "    collection = databases[election]\n",
+    "    if state == 'All':\n",
+    "        result = query_formatter(collection, state, county=None)\n",
+    "        figure = get_diversity_figure(result, f'{election} election')\n",
+    "        figure.show()\n",
+    "    \n",
+    "    elif (state != 'Select' or state != 'All') and county == \"All\":\n",
+    "        result = query_formatter(collection, state, county='All')\n",
+    "        figure = get_diversity_figure(result, f'{election} election, {state}')\n",
+    "        figure.show()\n",
+    "        \n",
+    "        \n",
+    "\n",
+    "UI = interactive(plot_second, election=election, state=state, county=county)\n",
+    "controls = HBox(UI.children[:-1], layout = Layout(flex_flow='row wrap'))\n",
+    "output = UI.children[-1]\n",
+    "display(VBox([controls, output]))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "collection.aggregate([\n",
+    "    {'$match':{'state':state, 'county':county}},\n",
+    "    {'$group':{'_id':'$party', 'votes':{'$sum':'$total_votes'}}},\n",
+    "    {'$sort': OrderedDict([('votes', -1), ('_id', -1)])},\n",
+    "    {'$lookup':{\n",
+    "        'from': \"census_2017\",\n",
+    "        'let': {'election_state': \"$state\", 'election_county': \"$county\" },\n",
+    "        'pipeline':[\n",
+    "            {'$match':{'$state':\"$$election_state\", '$county':\"$$election_county\"}},\n",
+    "            {'$group':{\n",
+    "                '_id':'Diversity',\n",
+    "                \"Hispanic\" : {'$sum':\"$Hispanic\"},\n",
+    "                \"White\" : {'$sum' :\"$White\"},\n",
+    "                \"Black\" : {'$sum' :\"$Black\"},\n",
+    "                \"Native\" : {'$sum' :\"$Native\"},\n",
+    "                \"Asian\" : {'$sum' :\"$Asian\"},\n",
+    "                \"Pacific\" : {'$sum' :\"$Pacific\"}}},\n",
+    "            {'$project':{'Percentage':{'$subtract':[100,\"$White\"]}}},\n",
+    "            {'$sort': OrderedDict([('Percentage', -1), ('_id', -1)])},\n",
+    "        ],\n",
+    "        \"as\":\"Diversity\"\n",
+    "    }}\n",
+    "])\n",
+    "\n",
+    "\n",
+    "{ \"$project\" : {\n",
+    "      'totalA' : '$totalA',\n",
+    "      'totalB' : '$totalB',\n",
+    "      'totalSum' : { '$add' : [ '$totalA', '$totalB' ] },\n",
+    "     }\n",
+    "                     { $expr:\n",
+    "                        { $and:\n",
+    "                           [\n",
+    "                             { $eq: [ \"$state\",  \"$$election_state\" ] },\n",
+    "                             { $eq: [ \"$county\", \"$$election_county\" ] }\n",
+    "                           ]\n",
+    "                        }\n",
+    "                     }\n",
+    "\n",
+    " "
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.6"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
